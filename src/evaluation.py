@@ -6,8 +6,9 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import MinMaxScaler, OrdinalEncoder, FunctionTransformer, LabelEncoder
+from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
 
 df = pd.read_csv("data/credit_risk_dataset.csv")
 
@@ -63,14 +64,30 @@ preprocessor = ColumnTransformer([
     ("cat", cat_pipeline, categorical_cols)
 ])
 
+log_reg_pipeline = Pipeline([
+    ("preprocessor", preprocessor),
+    ("classifier", LogisticRegression(random_state=42, solver="liblinear"))
+])
+
 dt_pipeline = Pipeline([
     ("preprocessor", preprocessor),
     ("classifier", DecisionTreeClassifier(max_depth=5, random_state=42))
 ])
 
+log_reg_pipeline.fit(X_train, y_train)
 dt_pipeline.fit(X_train, y_train)
 
-y_pred = dt_pipeline.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
 
-print("Decision Tree Accuracy:", round(accuracy, 4))
+def evaluate_model(name, pipeline):
+    y_pred = pipeline.predict(X_test)
+    y_prob = pipeline.predict_proba(X_test)[:, 1]
+
+    print(f"\n--- {name} ---")
+    print("Accuracy:", round(accuracy_score(y_test, y_pred), 4))
+    print("ROC-AUC:", round(roc_auc_score(y_test, y_prob), 4))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+
+
+evaluate_model("Logistic Regression", log_reg_pipeline)
+evaluate_model("Decision Tree", dt_pipeline)
