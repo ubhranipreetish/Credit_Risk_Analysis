@@ -26,9 +26,7 @@ from sklearn.metrics import (
 import joblib
 
 
-# --------------------------------------------
-# 1. LOAD DATA
-# --------------------------------------------
+# LOAD DATA
 
 DATA_PATH = "data/credit_risk_dataset.csv"
 MODEL_DIR = "models"
@@ -60,9 +58,7 @@ X = df.drop(columns=[target_col])
 y = df[target_col]
 
 
-# --------------------------------------------
-# 2. TRAIN-TEST SPLIT
-# --------------------------------------------
+# TRAIN-TEST SPLIT
 
 X_train, X_test, y_train, y_test = train_test_split(
     X,
@@ -77,9 +73,7 @@ y_train = target_encoder.fit_transform(y_train)
 y_test = target_encoder.transform(y_test)
 
 
-# --------------------------------------------
-# 3. PREPROCESSING
-# --------------------------------------------
+# PREPROCESSING
 
 log_transformer = FunctionTransformer(np.log1p, feature_names_out="one-to-one")
 
@@ -100,9 +94,7 @@ preprocessor = ColumnTransformer([
 ])
 
 
-# --------------------------------------------
-# 4. MODEL PIPELINES
-# --------------------------------------------
+# MODEL PIPELINES
 
 log_reg_pipeline = Pipeline([
     ("preprocessor", preprocessor),
@@ -115,17 +107,13 @@ dt_pipeline = Pipeline([
 ])
 
 
-# --------------------------------------------
-# 5. TRAIN MODELS
-# --------------------------------------------
+# TRAIN MODELS
 
 log_reg_pipeline.fit(X_train, y_train)
 dt_pipeline.fit(X_train, y_train)
 
 
-# --------------------------------------------
-# 6. EVALUATION FUNCTION
-# --------------------------------------------
+# EVALUATION FUNCTION
 
 def evaluate_model(name, pipeline):
     y_pred = pipeline.predict(X_test)
@@ -161,9 +149,7 @@ log_metrics = evaluate_model("Logistic Regression", log_reg_pipeline)
 dt_metrics = evaluate_model("Decision Tree", dt_pipeline)
 
 
-# --------------------------------------------
-# 7. MODEL COMPARISON
-# --------------------------------------------
+# MODEL COMPARISON
 
 comparison_df = pd.DataFrame({
     "Logistic Regression": log_metrics,
@@ -174,13 +160,10 @@ print("\n===== MODEL COMPARISON =====")
 print(comparison_df)
 
 
-# --------------------------------------------
-# 8. EXPLAINABILITY
-# --------------------------------------------
+# EXPLAINABILITY
 
 feature_names = log_reg_pipeline.named_steps["preprocessor"].get_feature_names_out()
 
-# Logistic Coefficients
 log_model = log_reg_pipeline.named_steps["classifier"]
 coefficients = log_model.coef_[0]
 
@@ -193,7 +176,6 @@ coef_df = pd.DataFrame({
 print("\nTop 10 Logistic Regression Risk Drivers:")
 print(coef_df.head(10))
 
-# Decision Tree Importance
 dt_model = dt_pipeline.named_steps["classifier"]
 importance_df = pd.DataFrame({
     "Feature": feature_names,
@@ -202,3 +184,12 @@ importance_df = pd.DataFrame({
 
 print("\nTop 10 Decision Tree Risk Drivers:")
 print(importance_df.head(10))
+
+
+# SAVE ARTIFACTS
+
+joblib.dump(log_reg_pipeline, os.path.join(MODEL_DIR, "logistic_pipeline.joblib"))
+joblib.dump(dt_pipeline, os.path.join(MODEL_DIR, "decision_tree_pipeline.joblib"))
+joblib.dump(target_encoder, os.path.join(MODEL_DIR, "target_encoder.joblib"))
+
+print("\nAll models saved successfully in /models directory.")
