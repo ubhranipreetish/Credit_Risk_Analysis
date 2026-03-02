@@ -1,6 +1,9 @@
-# Project 10: Intelligent Credit Risk Scoring & Agentic Lending Decision Support  
+# Project 10: Intelligent Credit Risk Scoring & Agentic Lending Decision Support 
+
 
 ## From Financial Risk Modeling to Automated Lending Advice  
+
+**Live Demo:** https://credit-risk-analyzer-123.streamlit.app/  
 
 ---
 
@@ -71,9 +74,9 @@ Extend the scoring system into an agentic AI assistant that reasons about borrow
 
 ---
 
-# 🚀 Setup Instructions  
+# Setup Instructions  
 
-## 1️⃣ Clone the Repository  
+## Clone the Repository  
 
 ```bash
 git clone https://github.com/ubhranipreetish/Credit_Risk_Analysis
