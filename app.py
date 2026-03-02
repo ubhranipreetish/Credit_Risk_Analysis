@@ -1,6 +1,6 @@
 import os
 import sys
-import time
+import json
 import joblib
 import pandas as pd
 import streamlit as st
@@ -10,197 +10,139 @@ from sklearn.preprocessing import LabelEncoder
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from src.explain import get_logistic_coefficients, get_decision_tree_importance
 from src.preprocessing import build_preprocessor
-from src.model_builder import build_logistic_pipeline, build_decision_tree_pipeline
+from src.model_builder import build_tuned_logistic_pipeline, build_tuned_decision_tree_pipeline
+from src.data_loader import load_data
+from src.evaluate import evaluate_model, save_metrics_json, generate_report_images
+from src import NUMERICAL_COLS, CATEGORICAL_COLS, TARGET_COL
 
 def auto_train():
     model_dir = "models"
+    report_dir = "reports"
     if (os.path.exists(f"{model_dir}/decision_tree_pipeline.joblib") and
-            os.path.exists(f"{model_dir}/logistic_pipeline.joblib")):
+            os.path.exists(f"{model_dir}/logistic_pipeline.joblib") and
+            os.path.exists(f"{report_dir}/metrics.json")):
         return
     os.makedirs(model_dir, exist_ok=True)
-    with st.spinner("First run detected — training models, please wait…"):
-        df = pd.read_csv("data/credit_risk_dataset.csv")
-        numerical_cols   = ['person_age','person_income','person_emp_length','loan_amnt',
-                             'loan_int_rate','loan_percent_income','cb_person_cred_hist_length']
-        categorical_cols = ['person_home_ownership','loan_intent','loan_grade','cb_person_default_on_file']
-        X = df.drop(columns=["loan_status"])
-        y = df["loan_status"]
+    os.makedirs(report_dir, exist_ok=True)
+    with st.spinner("First run detected — training models with hyperparameter tuning, please wait…"):
+        df = load_data(clean=True)
+        X = df.drop(columns=[TARGET_COL])
+        y = df[TARGET_COL]
         X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.7, random_state=42, stratify=y)
         enc = LabelEncoder()
-        y_train = enc.fit_transform(y_train)
-        preprocessor  = build_preprocessor(numerical_cols, categorical_cols)
-        lr_pipe = build_logistic_pipeline(preprocessor)
-        dt_pipe = build_decision_tree_pipeline(preprocessor)
-        lr_pipe.fit(X_train, y_train)
-        dt_pipe.fit(X_train, y_train)
+        y_train_enc = enc.fit_transform(y_train)
+        y_test_enc = enc.transform(y_test)
+        preprocessor = build_preprocessor(NUMERICAL_COLS, CATEGORICAL_COLS)
+        lr_pipe = build_tuned_logistic_pipeline(preprocessor, X_train, y_train_enc)
+        dt_pipe = build_tuned_decision_tree_pipeline(preprocessor, X_train, y_train_enc)
+        lr_metrics = evaluate_model("Logistic Regression", lr_pipe, X_test, y_test_enc)
+        dt_metrics = evaluate_model("Decision Tree", dt_pipe, X_test, y_test_enc)
+        all_metrics = {"Logistic Regression": lr_metrics, "Decision Tree": dt_metrics}
+        save_metrics_json(all_metrics, f"{report_dir}/metrics.json")
+        generate_report_images({"Logistic Regression": lr_pipe, "Decision Tree": dt_pipe},
+                               X_test, y_test_enc, report_dir)
         joblib.dump(lr_pipe, f"{model_dir}/logistic_pipeline.joblib")
         joblib.dump(dt_pipe, f"{model_dir}/decision_tree_pipeline.joblib")
         joblib.dump(enc,     f"{model_dir}/target_encoder.joblib")
 
-auto_train()
-
 st.set_page_config(page_title="Credit Risk Analyzer", layout="wide", initial_sidebar_state="collapsed")
 
+auto_train()
+
+# -- Styling --
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap');
 
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+html, body, [class*="css"] { font-family: 'Roboto', sans-serif; }
 
 .stApp {
-    background: linear-gradient(135deg, #0f0c29, #1a1a4e, #0f3460);
-    background-size: 400% 400%;
-    animation: aurora 16s ease infinite;
-    color: #e2e8f0;
-}
-@keyframes aurora {
-    0%   { background-position: 0%   50%; }
-    50%  { background-position: 100% 50%; }
-    100% { background-position: 0%   50%; }
+    background: linear-gradient(160deg, #0d1117, #161b22);
+    color: #c9d1d9;
 }
 
-.stApp::before {
-    content: ''; position: fixed; top: -160px; left: -160px;
-    width: 600px; height: 600px;
-    background: radial-gradient(circle, rgba(99,102,241,0.18) 0%, transparent 70%);
-    border-radius: 50%; pointer-events: none; z-index: 0;
-    animation: orb1 13s ease-in-out infinite;
-}
-.stApp::after {
-    content: ''; position: fixed; bottom: -130px; right: -130px;
-    width: 520px; height: 520px;
-    background: radial-gradient(circle, rgba(236,72,153,0.13) 0%, transparent 70%);
-    border-radius: 50%; pointer-events: none; z-index: 0;
-    animation: orb2 17s ease-in-out infinite;
-}
-@keyframes orb1 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(45px,55px) scale(1.1)} }
-@keyframes orb2 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-35px,-45px) scale(1.08)} }
+h1, h2, h3 { color: #e6edf3 !important; font-weight: 600 !important; }
 
-h1 { font-family:'Space Grotesk',sans-serif !important; font-weight:700 !important; color:#fff !important; letter-spacing:-0.5px !important; margin-bottom:0 !important; }
-h2, h3 { font-family:'Space Grotesk',sans-serif !important; color:#c7d2fe !important; font-weight:600 !important; }
+section[data-testid="stSidebar"] { display: none; }
 
-section[data-testid="stSidebar"] { display:none; }
-
-input[type="number"],
-div[data-baseweb="input"] input {
-    background: #ffffff !important;
-    border: 1px solid rgba(99,102,241,0.35) !important;
-    border-radius: 12px !important;
+/* inputs */
+input[type="number"], div[data-baseweb="input"] input {
+    background: #fff !important;
+    border: 1px solid #3a4a5c !important;
+    border-radius: 8px !important;
     color: #1e293b !important;
-    font-size: 1rem !important;
-    transition: border-color 0.3s, box-shadow 0.3s !important;
 }
-input[type="number"]:hover,
 input[type="number"]:focus {
-    border-color: rgba(129,140,248,0.65) !important;
-    box-shadow: 0 0 0 3px rgba(99,102,241,0.18) !important;
+    border-color: #5b8def !important;
+    box-shadow: 0 0 0 2px rgba(91,141,239,0.2) !important;
 }
 
+/* selects */
 div[data-baseweb="select"] > div {
-    background: rgba(30, 27, 75, 0.85) !important;
-    border: 1px solid rgba(99,102,241,0.35) !important;
-    border-radius: 12px !important;
-    color: #e2e8f0 !important;
-    transition: border-color 0.3s, box-shadow 0.3s !important;
-    backdrop-filter: blur(8px);
+    background: rgba(22, 27, 34, 0.9) !important;
+    border: 1px solid #3a4a5c !important;
+    border-radius: 8px !important;
+    color: #c9d1d9 !important;
 }
-div[data-baseweb="select"] > div:hover {
-    border-color: rgba(129,140,248,0.5) !important;
-    box-shadow: 0 0 0 3px rgba(99,102,241,0.15) !important;
-}
-div[data-baseweb="select"] span {
-    color: #e2e8f0 !important;
-}
+div[data-baseweb="select"] span { color: #c9d1d9 !important; }
 ul[data-testid="stSelectboxVirtualDropdown"] {
-    background: #1e1b4b !important;
-    border: 1px solid rgba(99,102,241,0.3) !important;
-    border-radius: 12px !important;
+    background: #161b22 !important;
+    border: 1px solid #3a4a5c !important;
+    border-radius: 8px !important;
 }
-ul[data-testid="stSelectboxVirtualDropdown"] li {
-    color: #e2e8f0 !important;
-}
+ul[data-testid="stSelectboxVirtualDropdown"] li { color: #c9d1d9 !important; }
 
+/* buttons */
 .stButton > button {
-    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    background: #238636;
     color: #fff;
-    font-family: 'Space Grotesk', sans-serif;
-    font-weight: 600; font-size: 1rem;
-    border: none; border-radius: 14px;
-    padding: 0.75rem 2rem; width: 100%;
-    box-shadow: 0 4px 24px rgba(99,102,241,0.35);
-    transition: transform 0.25s ease, box-shadow 0.25s ease, background 0.3s ease;
-    margin-top: 8px;
+    font-weight: 600;
+    border: none; border-radius: 8px;
+    padding: 0.7rem 1.8rem; width: 100%;
+    transition: background 0.2s ease;
+    margin-top: 6px;
 }
-.stButton > button:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 8px 32px rgba(99,102,241,0.6);
-    background: linear-gradient(135deg, #818cf8, #a78bfa);
-}
-.stButton > button:active { transform: translateY(0); }
+.stButton > button:hover { background: #2ea043; }
 
+/* expander */
 details {
-    background: rgba(255,255,255,0.04) !important;
-    border: 1px solid rgba(255,255,255,0.1) !important;
-    border-radius: 16px !important;
+    background: rgba(255,255,255,0.03) !important;
+    border: 1px solid #30363d !important;
+    border-radius: 10px !important;
     padding: 6px 12px !important;
-    backdrop-filter: blur(10px);
-    transition: box-shadow 0.3s;
 }
-details:hover { box-shadow: 0 4px 24px rgba(99,102,241,0.15) !important; }
-summary { color:#c7d2fe !important; font-weight:600 !important; font-size:1rem !important; }
+summary { color: #e6edf3 !important; font-weight: 600 !important; }
 
+/* alerts */
 div[data-testid="stAlertContainer"] > div {
-    border-radius: 14px !important;
-    border: 1px solid rgba(255,255,255,0.1) !important;
-    backdrop-filter: blur(10px);
-    padding: 1rem 1.25rem !important;
-    animation: slideUp 0.4s ease both;
-}
-@keyframes slideUp {
-    from { opacity:0; transform:translateY(12px); }
-    to   { opacity:1; transform:translateY(0); }
+    border-radius: 10px !important;
+    border: 1px solid #30363d !important;
+    padding: 0.9rem 1.1rem !important;
 }
 
+/* metrics */
 div[data-testid="stMetric"] {
-    background: rgba(255,255,255,0.05) !important;
-    border: 1px solid rgba(255,255,255,0.1) !important;
-    border-radius: 16px !important;
-    padding: 1rem 1.25rem !important;
-    backdrop-filter: blur(8px);
-    transition: transform 0.25s ease, box-shadow 0.25s ease;
+    background: rgba(255,255,255,0.04) !important;
+    border: 1px solid #30363d !important;
+    border-radius: 10px !important;
+    padding: 0.9rem 1.1rem !important;
 }
-div[data-testid="stMetric"]:hover { transform:translateY(-3px); box-shadow:0 6px 24px rgba(99,102,241,0.2); }
-div[data-testid="stMetricValue"] { color:#a5b4fc !important; font-family:'Space Grotesk',sans-serif !important; font-size:1.8rem !important; font-weight:700 !important; }
-div[data-testid="stMetricLabel"] { color:#94a3b8 !important; font-size:0.82rem !important; font-weight:500 !important; text-transform:uppercase; letter-spacing:0.5px; }
+div[data-testid="stMetricValue"] { color: #58a6ff !important; font-size: 1.6rem !important; font-weight: 700 !important; }
+div[data-testid="stMetricLabel"] { color: #8b949e !important; font-size: 0.82rem !important; text-transform: uppercase; }
 
-label, .stSelectbox label, .stNumberInput label { color:#94a3b8 !important; font-size:0.88rem !important; font-weight:500 !important; }
+label, .stSelectbox label, .stNumberInput label { color: #8b949e !important; font-size: 0.88rem !important; font-weight: 500 !important; }
 
-.stDataFrame { border-radius:14px !important; overflow:hidden; border:1px solid rgba(255,255,255,0.1) !important; }
+.stDataFrame { border-radius: 10px !important; overflow: hidden; border: 1px solid #30363d !important; }
 
-hr { border-color:rgba(255,255,255,0.1) !important; margin:1.5rem 0 !important; }
-
-div[data-testid="stSpinner"] > div { border-top-color:#818cf8 !important; }
+hr { border-color: #30363d !important; margin: 1.5rem 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
-<div style='text-align:center; padding:2.5rem 0 1.5rem 0;'>
-    <div style='display:inline-block; background:linear-gradient(135deg,rgba(99,102,241,0.15),rgba(139,92,246,0.15));
-                border:1px solid rgba(99,102,241,0.35); border-radius:999px; padding:6px 22px;
-                color:#a5b4fc; font-size:0.82rem; font-weight:600; letter-spacing:1.5px; margin-bottom:18px;'>
-        ✦&nbsp; ML-POWERED LENDING INTELLIGENCE
-    </div><br>
-    <span style='font-family:Space Grotesk,sans-serif; font-size:3rem; font-weight:700;
-                 background:linear-gradient(135deg,#e0e7ff,#c7d2fe,#a5b4fc);
-                 -webkit-background-clip:text; -webkit-text-fill-color:transparent;'>
-        Credit Risk Analyzer
-    </span>
-    <p style='color:#94a3b8; font-size:1.1rem; margin-top:12px; font-weight:400;'>
-        Instant borrower risk profiling powered by machine learning
-    </p>
-</div>
-""", unsafe_allow_html=True)
+# -- Header --
+st.markdown("<h1 style='text-align:center; margin-bottom:0;'>Credit Risk Analyzer</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align:center; color:#8b949e; margin-top:4px;'>Evaluate borrower risk profiles using trained ML models</p>", unsafe_allow_html=True)
 
+# -- Load Models --
 @st.cache_resource
 def load_models():
     try:
@@ -214,62 +156,117 @@ def load_models():
 
 dt_pipeline, lr_pipeline, encoder = load_models()
 
+# -- Model Selection --
 sel_col, _ = st.columns([1, 2])
 with sel_col:
-    model_choice = st.selectbox("🤖  Select Model", ["Decision Tree", "Logistic Regression"])
+    model_choice = st.selectbox("Select Model", ["Decision Tree", "Logistic Regression"])
 model = dt_pipeline if model_choice == "Decision Tree" else lr_pipeline
 
-with st.expander("📊  Model Performance — Test Set Metrics", expanded=False):
-    ALL_METRICS = {
-        "Logistic Regression": {"Accuracy": 0.8494, "ROC-AUC": 0.8592,
-                                 "CM": [[7278, 364], [1108, 1025]]},
-        "Decision Tree":       {"Accuracy": 0.9099, "ROC-AUC": 0.8963,
-                                 "CM": [[7626,  16], [ 865, 1268]]}
-    }
-    m = ALL_METRICS[model_choice]
-    mc1, mc2, mc3 = st.columns(3)
-    mc1.metric("Accuracy", f"{m['Accuracy']*100:.2f}%")
-    mc2.metric("ROC-AUC",  f"{m['ROC-AUC']*100:.2f}%")
-    st.markdown("<br>", unsafe_allow_html=True)
-    cm_df = pd.DataFrame(m["CM"],
-                          columns=["Predicted Good (0)", "Predicted Bad (1)"],
-                          index=["Actual Good (0)", "Actual Bad (1)"])
-    st.dataframe(cm_df, use_container_width=True)
+# -- Metrics + Charts (always show all 4 images) --
+with st.expander("Model Performance — Test Set Metrics", expanded=False):
+    try:
+        with open("reports/metrics.json", "r") as f:
+            ALL_METRICS = json.load(f)
+    except FileNotFoundError:
+        ALL_METRICS = {}
+        st.warning("Metrics not found. Please retrain models.")
 
-st.markdown("<br>", unsafe_allow_html=True)
+    if model_choice in ALL_METRICS:
+        m = ALL_METRICS[model_choice]
+        mc1, mc2, _ = st.columns(3)
+        mc1.metric("Accuracy", f"{m['Accuracy']*100:.2f}%")
+        mc2.metric("ROC-AUC",  f"{m['ROC_AUC']*100:.2f}%")
+        st.markdown("---")
+        cm = m.get("Confusion_Matrix", [])
+        if cm:
+            cm_df = pd.DataFrame(cm,
+                                  columns=["Predicted Good (0)", "Predicted Bad (1)"],
+                                  index=["Actual Good (0)", "Actual Bad (1)"])
+            st.dataframe(cm_df, use_container_width=True)
 
+    # Always show all 4 report images
+    st.markdown("---")
+    st.markdown("#### Evaluation Charts")
+    img_col1, img_col2 = st.columns(2)
+    if os.path.exists("reports/confusion_matrix_logistic_regression.png"):
+        img_col1.image("reports/confusion_matrix_logistic_regression.png",
+                       caption="Logistic Regression — Confusion Matrix", use_container_width=True)
+    if os.path.exists("reports/confusion_matrix_decision_tree.png"):
+        img_col2.image("reports/confusion_matrix_decision_tree.png",
+                       caption="Decision Tree — Confusion Matrix", use_container_width=True)
+    img_col3, img_col4 = st.columns(2)
+    if os.path.exists("reports/roc_curves.png"):
+        img_col3.image("reports/roc_curves.png",
+                       caption="ROC Curves Comparison", use_container_width=True)
+    if os.path.exists("reports/model_comparison.png"):
+        img_col4.image("reports/model_comparison.png",
+                       caption="Accuracy vs ROC-AUC", use_container_width=True)
+
+st.markdown("---")
+
+# -- Input Form --
 col1, col2 = st.columns(2, gap="large")
 
 with col1:
-    st.markdown("### 👤 &nbsp; Personal Information")
-    person_age            = st.number_input("Age",                           min_value=18,  max_value=100,     value=30)
-    person_income         = st.number_input("Annual Income ($)",             min_value=0,                      value=50000)
-    person_emp_length     = st.number_input("Employment Length (years)",     min_value=0.0,                    value=5.0)
-    person_home_ownership = st.selectbox  ("Home Ownership",                ["RENT", "MORTGAGE", "OWN", "OTHER"])
+    st.markdown("### Personal Information")
+    person_age = st.number_input("Age", min_value=18, max_value=100, value=30,
+                                 step=1, help="Borrower's current age (18-100)")
+    person_income = st.number_input("Annual Income ($)", min_value=0, value=50000,
+                                    step=5000, help="Total yearly income before taxes")
+    person_emp_length = st.number_input("Employment Length (years)", min_value=0.0, value=5.0,
+                                        step=0.5, help="How long the borrower has been employed at current job")
+    person_home_ownership = st.selectbox("Home Ownership", ["RENT", "MORTGAGE", "OWN", "OTHER"],
+                                         help="Current living situation of the borrower")
 
 with col2:
-    st.markdown("### 💳 &nbsp; Loan Details")
-    loan_amnt     = st.number_input("Loan Amount ($)",   min_value=0,   max_value=1_000_000, value=10000)
-    loan_int_rate = st.number_input("Interest Rate (%)", min_value=0.0, max_value=50.0,      value=10.0)
-    loan_intent   = st.selectbox  ("Loan Intent",       ["PERSONAL","EDUCATION","MEDICAL","VENTURE","HOMEIMPROVEMENT","DEBTCONSOLIDATION"])
-    loan_grade    = st.selectbox  ("Loan Grade",        ["A","B","C","D","E","F","G"])
+    st.markdown("### Loan Details")
+    loan_amnt = st.number_input("Loan Amount ($)", min_value=0, max_value=1_000_000, value=10000,
+                                step=1000, help="Requested loan amount in dollars")
+    loan_int_rate = st.number_input("Interest Rate (%)", min_value=0.0, max_value=50.0, value=10.0,
+                                    step=0.5, help="Annual interest rate on the loan")
+    loan_intent = st.selectbox("Loan Intent",
+                               ["PERSONAL", "EDUCATION", "MEDICAL", "VENTURE", "HOMEIMPROVEMENT", "DEBTCONSOLIDATION"],
+                               help="Purpose of the loan")
+    loan_grade = st.selectbox("Loan Grade", ["A", "B", "C", "D", "E", "F", "G"],
+                              help="A = lowest risk/rate, G = highest risk/rate. "
+                                   "Assigned by the lender based on credit score and history.")
 
-st.markdown("<br>", unsafe_allow_html=True)
-st.markdown("### 📁 &nbsp; Credit History")
+st.markdown("---")
+st.markdown("### Credit History")
 col3, col4 = st.columns(2, gap="large")
 with col3:
-    cb_person_cred_hist_length = st.number_input("Credit History Length (years)", min_value=0, value=5)
+    cb_person_cred_hist_length = st.number_input("Credit History Length (years)", min_value=0, value=5,
+                                                  step=1, help="Number of years the borrower has had credit accounts")
 with col4:
-    cb_person_default_on_file  = st.selectbox("Historical Default on File", ["N", "Y"])
+    cb_person_default_on_file = st.selectbox("Historical Default on File", ["N", "Y"],
+                                             help="Whether the borrower has previously defaulted on a loan")
 
 loan_percent_income = (loan_amnt / person_income) if person_income > 0 else 0.0
 
-st.markdown("<br>", unsafe_allow_html=True)
+# -- Validation Warnings --
+validation_msgs = []
+if person_emp_length > (person_age - 18):
+    validation_msgs.append(f"Employment length ({person_emp_length:.0f} yrs) exceeds possible working years for age {person_age}.")
+if cb_person_cred_hist_length > (person_age - 18):
+    validation_msgs.append(f"Credit history ({cb_person_cred_hist_length} yrs) exceeds possible history for age {person_age}.")
+if loan_percent_income > 0.8:
+    validation_msgs.append(f"Loan-to-income ratio is very high ({loan_percent_income:.0%}). Lenders typically cap at 40-50%.")
+if person_income > 0 and person_income < 10000 and loan_amnt > 50000:
+    validation_msgs.append("Loan amount seems disproportionately large relative to income.")
+if person_age < 21 and person_home_ownership == "OWN":
+    validation_msgs.append("Home ownership under age 21 is unusual and may affect prediction reliability.")
 
-if st.button("⚡ &nbsp; Evaluate Credit Risk"):
+for msg in validation_msgs:
+    st.warning(msg)
+
+st.markdown("---")
+
+# -- Evaluate Button --
+run_clicked = st.button("Evaluate Credit Risk")
+
+# -- Prediction --
+if run_clicked:
     with st.spinner("Running inference…"):
-        time.sleep(0.65)
-
         input_df = pd.DataFrame([{
             "person_age":               person_age,
             "person_income":            person_income,
@@ -287,79 +284,127 @@ if st.button("⚡ &nbsp; Evaluate Credit Risk"):
         prediction = model.predict(input_df)
         status     = encoder.inverse_transform(prediction)[0]
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("### 🎯 &nbsp; Assessment Result")
+    st.markdown("---")
+    st.markdown("<div id='result-anchor'></div>", unsafe_allow_html=True)
+    st.markdown("### Assessment Result")
 
     if status == 1:
-        st.error("⚠️  **High Risk** — This profile matches historical patterns of loan default.")
-        verdict_color = "#ef4444"
+        st.error("**High Risk** — This profile matches historical default patterns.")
+        verdict_color = "#da3633"
     else:
-        st.success("✅  **Low Risk** — This profile suggests a high likelihood of successful repayment.")
-        verdict_color = "#22c55e"
+        st.success("**Low Risk** — This profile suggests successful repayment is likely.")
+        verdict_color = "#238636"
 
+    # probability meter
     try:
-        proba   = model.predict_proba(input_df)[0][1]
+        proba = model.predict_proba(input_df)[0][1]
         bar_pct = int(proba * 100)
+        # Pick color based on risk level
+        if proba < 0.3:
+            prob_color = "#238636"
+            risk_label = "Low"
+        elif proba < 0.6:
+            prob_color = "#d29922"
+            risk_label = "Moderate"
+        else:
+            prob_color = "#da3633"
+            risk_label = "High"
         st.markdown(f"""
-        <div style='margin:1.4rem 0 0.5rem 0;'>
+        <div style='margin: 1.2rem 0;'>
             <div style='display:flex; justify-content:space-between; margin-bottom:6px;'>
-                <span style='color:#94a3b8; font-size:0.9rem; font-weight:500;'>Default Probability</span>
-                <span style='color:{verdict_color}; font-size:1rem; font-weight:700;'>{proba:.1%}</span>
+                <span style='color:#8b949e; font-size:0.9rem;'>Default Probability</span>
+                <span style='color:{prob_color}; font-weight:700; font-size:1.1rem;'>{proba:.1%} ({risk_label})</span>
             </div>
-            <div style='width:100%; height:10px; background:rgba(255,255,255,0.08); border-radius:999px; overflow:hidden;'>
-                <div style='
-                    height:100%; width:{bar_pct}%;
-                    background: linear-gradient(90deg, #22c55e 0%, #eab308 50%, #ef4444 100%);
-                    background-size:{max(bar_pct,1)*4}% 100%;
-                    border-radius:999px;
-                    transition: width 1s cubic-bezier(0.34,1.56,0.64,1);
-                '></div>
+            <div style='position:relative; width:100%; height:20px; background:#21262d; border-radius:6px; overflow:hidden; border:1px solid #30363d;'>
+                <!-- colored segments -->
+                <div style='position:absolute; top:0; left:0; width:30%; height:100%; background:#16331d;'></div>
+                <div style='position:absolute; top:0; left:30%; width:30%; height:100%; background:#2d2a0e;'></div>
+                <div style='position:absolute; top:0; left:60%; width:40%; height:100%; background:#3d1214;'></div>
+                <!-- marker -->
+                <div style='position:absolute; top:0; left:{bar_pct}%; transform:translateX(-50%); width:3px; height:100%; background:#fff; box-shadow:0 0 4px rgba(255,255,255,0.5);'></div>
             </div>
-            <div style='display:flex; justify-content:space-between; margin-top:5px;'>
-                <span style='color:#64748b; font-size:0.75rem;'>Low Risk</span>
-                <span style='color:#64748b; font-size:0.75rem;'>High Risk</span>
+            <div style='display:flex; justify-content:space-between; margin-top:4px; font-size:0.75rem; color:#484f58;'>
+                <span>0%</span>
+                <span>30%</span>
+                <span>60%</span>
+                <span>100%</span>
+            </div>
+            <div style='display:flex; justify-content:space-between; margin-top:1px; font-size:0.7rem;'>
+                <span style='color:#238636;'>Low Risk</span>
+                <span style='color:#d29922; text-align:center;'>Moderate</span>
+                <span style='color:#da3633; text-align:right;'>High Risk</span>
             </div>
         </div>""", unsafe_allow_html=True)
     except Exception:
         st.warning("Probability estimation not available for this model.")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("### 🔍 &nbsp; Key Risk Drivers")
+    st.markdown("---")
+    st.markdown("### Top Risk Drivers")
 
-    def clean(n):
-        return n.replace("num__","").replace("cat__","").replace("_"," ").title()
+    def format_feature(name):
+        """Strip sklearn column prefixes and format for display."""
+        return name.replace("num__", "").replace("cat__", "").replace("_", " ").title()
 
     if model_choice == "Decision Tree":
         for _, row in get_decision_tree_importance(model).head(3).iterrows():
-            feat  = clean(row["Feature"])
-            val   = row["Importance"]
+            feat = format_feature(row["Feature"])
+            val  = row["Importance"]
             bar_w = min(int(val * 380), 100)
             st.markdown(f"""
-            <div style='margin-bottom:14px;'>
-                <div style='display:flex; justify-content:space-between; margin-bottom:5px;'>
-                    <span style='color:#e2e8f0; font-weight:500; font-size:0.95rem;'>{feat}</span>
-                    <span style='color:#a5b4fc; font-weight:700;'>{val:.1%}</span>
+            <div style='margin-bottom:12px;'>
+                <div style='display:flex; justify-content:space-between; margin-bottom:4px;'>
+                    <span style='color:#c9d1d9;'>{feat}</span>
+                    <span style='color:#58a6ff; font-weight:600;'>{val:.1%}</span>
                 </div>
-                <div style='height:7px; background:rgba(255,255,255,0.07); border-radius:999px; overflow:hidden;'>
+                <div style='height:6px; background:rgba(255,255,255,0.06); border-radius:3px; overflow:hidden;'>
                     <div style='height:100%; width:{bar_w}%;
-                         background:linear-gradient(90deg,#6366f1,#8b5cf6);
-                         border-radius:999px;'></div>
+                         background:#58a6ff; border-radius:3px;'></div>
                 </div>
             </div>""", unsafe_allow_html=True)
     else:
         for _, row in get_logistic_coefficients(model).head(3).iterrows():
-            feat      = clean(row["Feature"])
-            impact    = row["Absolute Impact"]
-            is_risk   = row["Coefficient"] > 0
-            direction = "⬆️  Increases Risk" if is_risk else "⬇️  Reduces Risk"
-            color     = "#f87171" if is_risk else "#4ade80"
+            feat   = format_feature(row["Feature"])
+            impact = row["Absolute Impact"]
+            is_risk = row["Coefficient"] > 0
+            direction = "Increases Risk" if is_risk else "Reduces Risk"
+            color = "#da3633" if is_risk else "#238636"
             st.markdown(f"""
-            <div style='background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
-                         border-radius:14px; padding:12px 18px; margin-bottom:12px;
-                         transition: background 0.3s;'>
+            <div style='background:rgba(255,255,255,0.03); border:1px solid #30363d;
+                         border-radius:8px; padding:10px 14px; margin-bottom:10px;'>
                 <div style='display:flex; justify-content:space-between; align-items:center;'>
-                    <span style='color:#e2e8f0; font-weight:500; font-size:0.95rem;'>{feat}</span>
-                    <span style='color:{color}; font-size:0.88rem; font-weight:600;'>{direction}</span>
+                    <span style='color:#c9d1d9;'>{feat}</span>
+                    <span style='color:{color}; font-size:0.85rem; font-weight:600;'>{direction}</span>
                 </div>
-                <span style='color:#64748b; font-size:0.8rem;'>Impact magnitude: {impact:.3f}</span>
+                <span style='color:#484f58; font-size:0.8rem;'>Impact: {impact:.3f}</span>
             </div>""", unsafe_allow_html=True)
+
+    # auto-scroll to results
+    st.components.v1.html("""
+    <script>
+        function scrollToBottom() {
+            try {
+                // Try multiple Streamlit DOM selectors
+                var selectors = [
+                    'section.main .block-container',
+                    'section.main',
+                    '[data-testid="stAppViewContainer"]',
+                    '.main'
+                ];
+                var doc = window.parent.document;
+                for (var i = 0; i < selectors.length; i++) {
+                    var el = doc.querySelector(selectors[i]);
+                    if (el) {
+                        el.scrollTop = el.scrollHeight;
+                        break;
+                    }
+                }
+            } catch(e) {
+                // fallback: scroll the parent window itself
+                try { window.parent.scrollTo(0, 999999); } catch(e2) {}
+            }
+        }
+        // Run after a short delay to let Streamlit finish rendering
+        setTimeout(scrollToBottom, 100);
+        setTimeout(scrollToBottom, 500);
+    </script>
+    """, height=0)
