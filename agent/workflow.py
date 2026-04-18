@@ -30,7 +30,7 @@ Pipeline (with conditional paths):
 Usage:
     >>> from agent.workflow import run_agent
     >>> result = run_agent(input_data, debug=True)
-    >>> print(result["decision"]["Decision"])
+    >>> print(result["decision"]["Lending Decision"])
     >>> print(result["confidence_score"])
 """
 
@@ -81,6 +81,23 @@ class AgentState(TypedDict):
     # ── Metadata ─────────────────────────────────────────────────────────
     error: Optional[str]
     steps_completed: Optional[List[str]]
+
+
+class WorkflowOutput(TypedDict):
+    """Structured output contract for app-level workflow consumers."""
+
+    input: Dict[str, Any]
+    validated_data: Optional[Dict[str, Any]]
+    risk: Optional[Dict[str, Any]]
+    explanation: List[Dict[str, Any]]
+    query: Optional[str]
+    documents: List[Dict[str, Any]]
+    decision: Dict[str, Any]
+    risk_tier: Optional[str]
+    confidence_score: float
+    reasoning_passes: int
+    steps_completed: List[str]
+    error: Optional[str]
 
 
 # ── Confidence threshold for accepting a decision without reflection ─────
@@ -301,23 +318,34 @@ def rag_node(state: AgentState) -> dict:
         from agent.rag import retrieve_docs
 
         query = state.get("query", "credit risk guidelines")
-        documents = retrieve_docs(query=query, top_k=5, index_dir="rag/faiss_index")
+        documents = retrieve_docs(
+            query=query,
+            top_k=5,
+            index_dir="rag/faiss_index",
+            fail_on_empty=False,
+        )
 
         logger.info("✅ Retrieved %d chunks (top score: %.4f)",
                      len(documents), documents[0]["score"] if documents else 0.0)
 
         return {
             "documents": documents,
-            "steps_completed": (state.get("steps_completed") or []) + ["rag"],
+            "steps_completed": (state.get("steps_completed") or []) + (["rag"] if documents else ["rag:EMPTY"]),
         }
 
     except FileNotFoundError:
         logger.warning("⚠️  FAISS index not found — no regulatory context")
-        return {"documents": [], "steps_completed": (state.get("steps_completed") or []) + ["rag:NO_INDEX"]}
+        return {
+            "documents": [],
+            "steps_completed": (state.get("steps_completed") or []) + ["rag:NO_INDEX"],
+        }
 
     except Exception as e:
         logger.error("❌ RAG retrieval failed: %s", e)
-        return {"documents": [], "steps_completed": (state.get("steps_completed") or []) + ["rag:FAILED"]}
+        return {
+            "documents": [],
+            "steps_completed": (state.get("steps_completed") or []) + ["rag:FAILED"],
+        }
 
 
 def rag_deep_node(state: AgentState) -> dict:
@@ -332,23 +360,34 @@ def rag_deep_node(state: AgentState) -> dict:
         from agent.rag import retrieve_docs
 
         query = state.get("query", "credit risk guidelines")
-        documents = retrieve_docs(query=query, top_k=8, index_dir="rag/faiss_index")
+        documents = retrieve_docs(
+            query=query,
+            top_k=8,
+            index_dir="rag/faiss_index",
+            fail_on_empty=False,
+        )
 
         logger.info("✅ DEEP: Retrieved %d chunks (top score: %.4f)",
                      len(documents), documents[0]["score"] if documents else 0.0)
 
         return {
             "documents": documents,
-            "steps_completed": (state.get("steps_completed") or []) + ["rag_deep"],
+            "steps_completed": (state.get("steps_completed") or []) + (["rag_deep"] if documents else ["rag_deep:EMPTY"]),
         }
 
     except FileNotFoundError:
         logger.warning("⚠️  FAISS index not found — no regulatory context")
-        return {"documents": [], "steps_completed": (state.get("steps_completed") or []) + ["rag_deep:NO_INDEX"]}
+        return {
+            "documents": [],
+            "steps_completed": (state.get("steps_completed") or []) + ["rag_deep:NO_INDEX"],
+        }
 
     except Exception as e:
         logger.error("❌ Deep RAG retrieval failed: %s", e)
-        return {"documents": [], "steps_completed": (state.get("steps_completed") or []) + ["rag_deep:FAILED"]}
+        return {
+            "documents": [],
+            "steps_completed": (state.get("steps_completed") or []) + ["rag_deep:FAILED"],
+        }
 
 
 def decision_node(state: AgentState) -> dict:
@@ -359,6 +398,15 @@ def decision_node(state: AgentState) -> dict:
     to determine if the decision needs reflective review.
     """
     logger.info("🤖 [Node 6] Generating lending decision via LLM...")
+
+    if state.get("error"):
+        logger.warning("⚠️  Skipping decision generation due to upstream error: %s", state.get("error"))
+        return {
+            "decision": {},
+            "confidence_score": 0.0,
+            "reasoning_passes": (state.get("reasoning_passes") or 0) + 1,
+            "steps_completed": (state.get("steps_completed") or []) + ["decision:SKIPPED"],
+        }
 
     try:
         from agent.llm_reasoner import generate_decision, compute_confidence_score
@@ -375,8 +423,8 @@ def decision_node(state: AgentState) -> dict:
         current_passes = (state.get("reasoning_passes") or 0) + 1
 
         logger.info(
-            "✅ Decision: %s | Confidence: %s | Score: %.4f | Pass: %d",
-            decision.get("Decision"), decision.get("Confidence"),
+            "✅ Decision: %s | Confidence: %.2f | Score: %.4f | Pass: %d",
+            decision.get("Lending Decision"), float(decision.get("Confidence", 0.0)),
             confidence_score, current_passes,
         )
 
@@ -393,13 +441,11 @@ def decision_node(state: AgentState) -> dict:
         probability = risk.get("probability", 0.0)
         return {
             "decision": {
-                "Profile Summary": "Unable to generate full analysis due to an error.",
+                "Borrower Profile Summary": "Unable to generate full analysis due to an error.",
                 "Risk Analysis": f"ML model predicted {risk.get('label', 'Unknown')} risk.",
-                "Key Risk Drivers": "Analysis unavailable.",
-                "Decision": "Reject" if probability > 0.5 else "Approve",
-                "Confidence": "Low",
-                "Justification": f"Emergency fallback based on ML probability ({probability:.1%}).",
-                "Sources": [],
+                "Lending Decision": "REJECT" if probability >= 0.65 else ("APPROVE" if probability <= 0.30 else "CONDITIONAL"),
+                "Confidence": 0.2,
+                "Regulatory References": [],
                 "Disclaimer": "AI-generated recommendation in fallback mode. Human review mandatory.",
             },
             "confidence_score": 0.25,
@@ -472,8 +518,8 @@ def reflect_node(state: AgentState) -> dict:
         new_passes = (state.get("reasoning_passes") or 1) + 1
 
         # Log whether the decision was upheld or overridden
-        original = initial_decision.get("Decision", "Unknown")
-        revised = revised_decision.get("Decision", "Unknown")
+        original = initial_decision.get("Lending Decision", "Unknown")
+        revised = revised_decision.get("Lending Decision", "Unknown")
         if original != revised:
             logger.info(
                 "🔄 Decision OVERRIDDEN: %s → %s (new confidence: %.4f)",
@@ -781,8 +827,8 @@ def run_agent(input_data: dict, debug: bool = False, max_passes: int = 2) -> dic
 
     if final_state.get("decision"):
         decision = final_state["decision"]
-        logger.info("   Decision: %s (%s confidence)",
-                     decision.get("Decision"), decision.get("Confidence"))
+        logger.info("   Decision: %s (%.2f confidence)",
+                     decision.get("Lending Decision"), float(decision.get("Confidence", 0.0)))
         if decision.get("Reflection"):
             logger.info("   Reflection: %s", str(decision.get("Reflection"))[:100])
 
@@ -833,3 +879,32 @@ def _debug_print_state(node_name: str, state: dict):
         print(f"  ⚠️  error: {state['error']}")
 
     print()
+
+
+def _normalize_workflow_output(input_data: dict, final_state: dict) -> WorkflowOutput:
+    """Normalize graph state into a stable output payload for app integration."""
+    return {
+        "input": input_data,
+        "validated_data": final_state.get("validated_data"),
+        "risk": final_state.get("risk"),
+        "explanation": final_state.get("explanation") or [],
+        "query": final_state.get("query"),
+        "documents": final_state.get("documents") or [],
+        "decision": final_state.get("decision") or {},
+        "risk_tier": final_state.get("risk_tier"),
+        "confidence_score": float(final_state.get("confidence_score") or 0.0),
+        "reasoning_passes": int(final_state.get("reasoning_passes") or 0),
+        "steps_completed": final_state.get("steps_completed") or [],
+        "error": final_state.get("error"),
+    }
+
+
+def run_workflow(input_data: dict, debug: bool = False, max_passes: int = 2) -> WorkflowOutput:
+    """
+    Stable workflow entrypoint for application callers.
+
+    This function executes the compiled LangGraph and returns a normalized,
+    structured payload suitable for UI/API consumers.
+    """
+    final_state = run_agent(input_data=input_data, debug=debug, max_passes=max_passes)
+    return _normalize_workflow_output(input_data=input_data, final_state=final_state)

@@ -85,7 +85,7 @@ def test_agent(input_data: dict, label: str, debug: bool = True):
     print(json.dumps(decision, indent=2, ensure_ascii=False))
 
     print(f"\n  Steps completed: {' → '.join(result.get('steps_completed', []))}")
-    print(f"  Decision: {decision.get('Decision', 'N/A')}")
+    print(f"  Decision: {decision.get('Lending Decision', 'N/A')}")
     print(DIVIDER)
 
     return result
@@ -109,9 +109,9 @@ def main():
     print(f"\n{DIVIDER}")
     print(f"  TEST SUMMARY")
     print(DIVIDER)
-    print(f"  High Risk      → {r1['decision']['Decision']}  {'✅' if r1['decision']['Decision'] == 'Reject' else '⚠️'}")
-    print(f"  Low Risk       → {r2['decision']['Decision']}  {'✅' if r2['decision']['Decision'] == 'Approve' else '⚠️'}")
-    print(f"  Borderline     → {r3['decision']['Decision']} (score: {r3.get('confidence_score')}, passes: {r3.get('reasoning_passes')})")
+    print(f"  High Risk      → {r1['decision']['Lending Decision']}  {'✅' if r1['decision']['Lending Decision'] == 'REJECT' else '⚠️'}")
+    print(f"  Low Risk       → {r2['decision']['Lending Decision']}  {'✅' if r2['decision']['Lending Decision'] == 'APPROVE' else '⚠️'}")
+    print(f"  Borderline     → {r3['decision']['Lending Decision']} (score: {r3.get('confidence_score')}, passes: {r3.get('reasoning_passes')})")
     print(f"\n  🎉 LANGGRAPH AGENT WORKFLOW TEST COMPLETE")
     print(DIVIDER)
 

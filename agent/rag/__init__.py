@@ -12,7 +12,13 @@ Usage:
 """
 
 from agent.rag.retriever import retrieve_docs
-from agent.rag.vector_store import build_faiss_index, load_faiss_index
+from agent.rag.vector_store import (
+    build_faiss_index,
+    load_faiss_index,
+    ensure_faiss_index_ready,
+    has_faiss_index,
+)
+from agent.rag.retriever import preload_retriever_index, initialize_retriever_safe_mode
 
 
 def build_rag_index(
@@ -57,4 +63,12 @@ def build_rag_index(
     return len(chunks)
 
 
-__all__ = ["build_rag_index", "retrieve_docs", "load_faiss_index"]
+__all__ = [
+    "build_rag_index",
+    "retrieve_docs",
+    "load_faiss_index",
+    "ensure_faiss_index_ready",
+    "has_faiss_index",
+    "preload_retriever_index",
+    "initialize_retriever_safe_mode",
+]

@@ -19,7 +19,7 @@ from agent.model_loader import predict_risk, load_model, load_target_encoder
 from agent.risk_explainer import explain_risk
 from agent.rag import build_rag_index, retrieve_docs
 from agent.llm_reasoner import generate_decision, build_query
-from agent.workflow import run_agent, build_agent, AgentState
+from agent.workflow import run_agent, run_workflow, build_agent, AgentState, WorkflowOutput
 
 __all__ = [
     "validate_input",
@@ -33,6 +33,8 @@ __all__ = [
     "generate_decision",
     "build_query",
     "run_agent",
+    "run_workflow",
     "build_agent",
     "AgentState",
+    "WorkflowOutput",
 ]

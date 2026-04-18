@@ -81,3 +81,25 @@ Extend the scoring system into an agentic AI assistant that reasons about borrow
 ```bash
 git clone https://github.com/ubhranipreetish/Credit_Risk_Analysis
 cd Credit_Risk_Analysis
+```
+
+## Install Dependencies
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+## Run The App (One Command)
+
+```bash
+./run_app.sh
+```
+
+The app will be available at `http://localhost:8501`.
+
+## Alternative Manual Run
+
+```bash
+.venv/bin/python -m streamlit run app.py --server.headless true --server.port 8501
+```

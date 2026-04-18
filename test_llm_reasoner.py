@@ -138,16 +138,16 @@ def main():
 
         # Summary
         print_header("TEST SUMMARY")
-        print(f"  High Risk Borrower → Decision: {decision_high['Decision']}")
-        print(f"  Low Risk Borrower  → Decision: {decision_low['Decision']}")
+        print(f"  High Risk Borrower → Decision: {decision_high['Lending Decision']}")
+        print(f"  Low Risk Borrower  → Decision: {decision_low['Lending Decision']}")
 
         # Validate decisions make sense
-        if decision_high["Decision"] == "Reject":
+        if decision_high["Lending Decision"] == "REJECT":
             print(f"  ✅ High risk correctly rejected")
         else:
             print(f"  ⚠️  High risk was approved — may need review")
 
-        if decision_low["Decision"] == "Approve":
+        if decision_low["Lending Decision"] == "APPROVE":
             print(f"  ✅ Low risk correctly approved")
         else:
             print(f"  ⚠️  Low risk was rejected — LLM may be overly conservative")

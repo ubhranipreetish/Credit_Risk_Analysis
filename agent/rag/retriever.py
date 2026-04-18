@@ -23,20 +23,60 @@ logger = logging.getLogger(__name__)
 _cached_index = None
 _cached_metadata = None
 _cached_index_dir = None
+_safe_mode = False
+_safe_mode_reason = None
+
+
+def initialize_retriever_safe_mode(
+    index_dir: str = "rag/faiss_index",
+    reason: str = "FAISS index unavailable",
+) -> None:
+    """Initialize retriever cache in safe mode to avoid hard failures."""
+    global _cached_index, _cached_metadata, _cached_index_dir, _safe_mode, _safe_mode_reason
+
+    _cached_index = None
+    _cached_metadata = []
+    _cached_index_dir = index_dir
+    _safe_mode = True
+    _safe_mode_reason = reason
+    logger.warning(
+        "RAG retriever initialized in SAFE MODE: index_dir='%s', reason='%s'",
+        index_dir,
+        reason,
+    )
 
 
 def _ensure_index_loaded(index_dir: str = "rag/faiss_index"):
     """Load and cache the FAISS index + metadata (only on first call or dir change)."""
-    global _cached_index, _cached_metadata, _cached_index_dir
+    global _cached_index, _cached_metadata, _cached_index_dir, _safe_mode
 
     if _cached_index is not None and _cached_index_dir == index_dir:
         return _cached_index, _cached_metadata
 
+    if _safe_mode and _cached_index_dir == index_dir:
+        return None, []
+
     from agent.rag.vector_store import load_faiss_index
 
-    _cached_index, _cached_metadata = load_faiss_index(index_dir)
-    _cached_index_dir = index_dir
-    return _cached_index, _cached_metadata
+    try:
+        _cached_index, _cached_metadata = load_faiss_index(index_dir)
+        _cached_index_dir = index_dir
+        _safe_mode = False
+        logger.info(
+            "RAG retriever cache ready: index_dir='%s', vectors=%d, metadata_entries=%d",
+            index_dir,
+            _cached_index.ntotal,
+            len(_cached_metadata),
+        )
+        return _cached_index, _cached_metadata
+    except Exception as exc:
+        initialize_retriever_safe_mode(index_dir=index_dir, reason=str(exc))
+        return None, []
+
+
+def preload_retriever_index(index_dir: str = "rag/faiss_index") -> None:
+    """Eagerly load the FAISS index into retriever cache (startup optimization)."""
+    _ensure_index_loaded(index_dir=index_dir)
 
 
 def retrieve_docs(
@@ -44,6 +84,7 @@ def retrieve_docs(
     top_k: int = 5,
     index_dir: str = "rag/faiss_index",
     score_threshold: Optional[float] = None,
+    fail_on_empty: bool = True,
 ) -> List[dict]:
     """
     Retrieve the most relevant document chunks for a query.
@@ -86,6 +127,13 @@ def retrieve_docs(
     # Load index (cached after first call)
     index, metadata = _ensure_index_loaded(index_dir)
 
+    if index is None:
+        msg = f"RAG retriever SAFE MODE active for index_dir='{index_dir}'"
+        logger.warning(msg)
+        if fail_on_empty:
+            raise RuntimeError(msg)
+        return []
+
     # Embed the query using the same model
     from agent.rag.embedder import embed_texts
 
@@ -94,7 +142,10 @@ def retrieve_docs(
     # Clamp top_k to available vectors
     effective_k = min(top_k, index.ntotal)
     if effective_k == 0:
-        logger.warning("FAISS index is empty — no results to return")
+        msg = "FAISS index is empty — no retrieval can be performed"
+        logger.error(msg)
+        if fail_on_empty:
+            raise RuntimeError(msg)
         return []
 
     # Search
@@ -124,4 +175,14 @@ def retrieve_docs(
         query[:50],
         results[0]["score"] if results else 0.0,
     )
+
+    if not results:
+        msg = (
+            f"RAG retrieval returned 0 chunks for query='{query[:80]}' "
+            f"(top_k={top_k}, threshold={score_threshold})"
+        )
+        logger.error(msg)
+        if fail_on_empty:
+            raise RuntimeError(msg)
+
     return results

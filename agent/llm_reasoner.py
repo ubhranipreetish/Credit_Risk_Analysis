@@ -31,14 +31,41 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-# Load environment variables from .env
-load_dotenv()
+# Load environment variables from a deterministic project-root .env path.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DOTENV_PATH = os.path.join(_PROJECT_ROOT, ".env")
+load_dotenv(dotenv_path=_DOTENV_PATH, override=False)
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_TEMPERATURE = 0.2
 GROQ_MAX_TOKENS = 2048
+
+CANONICAL_OUTPUT_FIELDS = (
+    "Borrower Profile Summary",
+    "Risk Analysis",
+    "Lending Decision",
+    "Confidence",
+    "Regulatory References",
+    "Disclaimer",
+)
+
+FIELD_ALIASES = {
+    "Borrower Profile Summary": ("Borrower Profile Summary", "Profile Summary", "profile_summary"),
+    "Risk Analysis": ("Risk Analysis", "risk_analysis"),
+    "Lending Decision": ("Lending Decision", "Decision", "decision", "lending_decision"),
+    "Confidence": ("Confidence", "Confidence Score", "confidence_score"),
+    "Regulatory References": (
+        "Regulatory References",
+        "Regulatory Sources",
+        "regulatory_references",
+        "regulatory_sources",
+    ),
+    "Disclaimer": ("Disclaimer", "disclaimer"),
+}
+
+SUPPORTED_LENDING_DECISIONS = {"APPROVE", "REJECT", "CONDITIONAL"}
 
 # ── System Prompt ────────────────────────────────────────────────────────────
 # Defines the LLM's role and behavioral constraints.
@@ -63,15 +90,15 @@ You must respond ONLY with a JSON object — no markdown, no extra text, no code
 # The exact structure the LLM must return.
 
 OUTPUT_SCHEMA = {
-    "Profile Summary": "Brief summary of the borrower's financial profile",
-    "Risk Analysis": "Detailed analysis of default risk based on ML prediction and regulations",
-    "Key Risk Drivers": "Top factors driving the risk assessment, explained in plain language",
-    "Decision": "Approve or Reject",
-    "Confidence": "High, Medium, or Low — how confident you are in this decision",
-    "Justification": "Clear reasoning linking evidence to decision",
-    "Sources": ["List of regulation documents referenced"],
-    "Disclaimer": "This is an AI-generated recommendation and should not be used as the sole basis for lending decisions. Final approval must involve human review and comply with all applicable regulations."
+    "Borrower Profile Summary": "Brief summary of the borrower's profile",
+    "Risk Analysis": "Risk analysis aligned with ML prediction and regulations",
+    "Lending Decision": "APPROVE or REJECT or CONDITIONAL",
+    "Confidence": "Numeric confidence score between 0.0 and 1.0",
+    "Regulatory References": ["List of regulation documents referenced"],
+    "Disclaimer": "This is an AI-generated recommendation and should not be used as the sole basis for lending decisions. Final approval must involve human review and comply with all applicable regulations.",
 }
+
+REQUIRED_OUTPUT_FIELDS = list(OUTPUT_SCHEMA.keys())
 
 # ── Confidence Thresholds ────────────────────────────────────────────────────
 # Used by the workflow to decide whether to accept or re-evaluate a decision.
@@ -79,7 +106,7 @@ OUTPUT_SCHEMA = {
 CONFIDENCE_LEVELS = {
     "high": 0.85,
     "medium": 0.60,
-    "low": 0.30,
+    "low": 0.35,
 }
 
 # Probability ranges that are considered "borderline" and may need deeper review
@@ -239,6 +266,128 @@ def _format_docs_section(retrieved_docs: list) -> str:
     return "\n\n".join(lines)
 
 
+def _normalize_decision_payload(payload: dict) -> dict:
+    """Map legacy decision payload keys into the canonical response schema."""
+    source = dict(payload or {})
+    normalized = {}
+
+    for canonical_field, aliases in FIELD_ALIASES.items():
+        value = None
+        for alias in aliases:
+            if alias in source:
+                value = source[alias]
+                break
+        normalized[canonical_field] = value
+
+    summary = normalized["Borrower Profile Summary"]
+    if not isinstance(summary, str) or not summary.strip():
+        normalized["Borrower Profile Summary"] = "Information not available."
+
+    risk_analysis = normalized["Risk Analysis"]
+    if not isinstance(risk_analysis, str) or not risk_analysis.strip():
+        normalized["Risk Analysis"] = "Information not available."
+
+    decision_value = str(normalized["Lending Decision"] or "CONDITIONAL").strip().upper()
+    if decision_value == "APPROVED":
+        decision_value = "APPROVE"
+    elif decision_value == "REJECTED":
+        decision_value = "REJECT"
+    elif decision_value not in SUPPORTED_LENDING_DECISIONS:
+        decision_value = "CONDITIONAL"
+    normalized["Lending Decision"] = decision_value
+
+    raw_confidence = normalized["Confidence"]
+    if isinstance(raw_confidence, str):
+        score_from_label = CONFIDENCE_LEVELS.get(raw_confidence.strip().lower())
+        if score_from_label is not None:
+            confidence = score_from_label
+        else:
+            try:
+                confidence = float(raw_confidence)
+            except ValueError:
+                confidence = 0.5
+    else:
+        try:
+            confidence = float(raw_confidence)
+        except (TypeError, ValueError):
+            confidence = 0.5
+    normalized["Confidence"] = max(0.0, min(confidence, 1.0))
+
+    regulatory_references = normalized["Regulatory References"]
+    if regulatory_references is None:
+        normalized["Regulatory References"] = []
+    elif isinstance(regulatory_references, list):
+        normalized["Regulatory References"] = [
+            str(reference).strip() for reference in regulatory_references if str(reference).strip()
+        ]
+    elif isinstance(regulatory_references, (tuple, set)):
+        normalized["Regulatory References"] = [
+            str(reference).strip() for reference in regulatory_references if str(reference).strip()
+        ]
+    else:
+        normalized["Regulatory References"] = [str(regulatory_references).strip()]
+
+    disclaimer = normalized["Disclaimer"]
+    if not isinstance(disclaimer, str) or not disclaimer.strip():
+        normalized["Disclaimer"] = (
+            "This is an AI-generated recommendation and should not be used as the sole basis for lending decisions. "
+            "Final approval must involve human review and comply with all applicable regulations."
+        )
+
+    return {field: normalized[field] for field in CANONICAL_OUTPUT_FIELDS}
+
+
+def _normalize_reference_text(text: str) -> str:
+    """Normalize reference text for deterministic matching against retrieved chunks."""
+    return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+
+
+def _validate_regulatory_references(references: list, retrieved_docs: list) -> list:
+    """Keep only references grounded in retrieved chunks and rewrite to canonical sources."""
+    if not references or not retrieved_docs:
+        return ["No verifiable regulatory reference found"]
+
+    normalized_docs = []
+    for doc in retrieved_docs:
+        source = str(doc.get("source", "")).strip()
+        text = str(doc.get("text", "")).strip()
+        if not source and not text:
+            continue
+        normalized_docs.append((source, _normalize_reference_text(source), _normalize_reference_text(text)))
+
+    grounded_references = []
+    seen = set()
+    for reference in references:
+        reference_text = str(reference).strip()
+        if not reference_text:
+            continue
+
+        normalized_reference = _normalize_reference_text(reference_text)
+        canonical_source = None
+
+        for source, normalized_source, normalized_text in normalized_docs:
+            if not source:
+                continue
+
+            if (
+                normalized_reference == normalized_source
+                or normalized_reference in normalized_source
+                or normalized_source in normalized_reference
+                or normalized_reference in normalized_text
+            ):
+                canonical_source = source
+                break
+
+        if canonical_source and canonical_source not in seen:
+            grounded_references.append(canonical_source)
+            seen.add(canonical_source)
+
+    if not grounded_references:
+        return ["No verifiable regulatory reference found"]
+
+    return grounded_references
+
+
 def _build_user_prompt(risk: dict, explanation: list, retrieved_docs: list) -> str:
     """
     Construct the full user prompt sent to the LLM.
@@ -288,25 +437,21 @@ Based on ALL the above evidence, produce a lending decision.
 
 Respond with ONLY a valid JSON object in this EXACT format:
 {{
-    "Profile Summary": "Brief summary of the borrower's financial profile based on the risk factors",
+    "Borrower Profile Summary": "Brief summary of the borrower's financial profile based on the risk factors",
     "Risk Analysis": "Detailed analysis combining ML prediction with regulatory context",
-    "Key Risk Drivers": "Top factors driving the assessment, explained in plain business language",
-    "Decision": "Approve" or "Reject",
-    "Confidence": "High", "Medium", or "Low" — how confident you are in this decision given the evidence,
-    "Justification": "Clear reasoning linking the evidence to your decision",
-    "Sources": ["list", "of", "source documents referenced"],
+    "Lending Decision": "APPROVE" or "REJECT" or "CONDITIONAL",
+    "Confidence": 0.0,
+    "Regulatory References": ["list", "of", "source documents referenced"],
     "Disclaimer": "This is an AI-generated recommendation and should not be used as the sole basis for lending decisions. Final approval must involve human review and comply with all applicable regulations."
 }}
 
 IMPORTANT:
 - Respond with ONLY the JSON object. No markdown, no code fences, no extra text.
-- The "Decision" field must be exactly "Approve" or "Reject".
-- The "Confidence" field must be exactly "High", "Medium", or "Low".
-- "High" = clear-cut case, strong evidence supports the decision.
-- "Medium" = some ambiguity, but evidence leans in one direction.
-- "Low" = borderline case, decision could reasonably go either way.
-- The "Sources" field must list actual document names from the regulations provided.
-- If no regulations were provided, use an empty list for Sources."""
+- The "Lending Decision" field must be exactly "APPROVE", "REJECT", or "CONDITIONAL".
+- Use "CONDITIONAL" when evidence is borderline and requires manual review/conditions.
+- "Confidence" must be numeric and between 0.0 and 1.0.
+- The "Regulatory References" field must list actual document names from the regulations provided.
+- If no regulations were provided, use an empty list for "Regulatory References"."""
 
     return prompt
 
@@ -389,11 +534,11 @@ def _build_fallback_response(risk: dict, explanation: list, retrieved_docs: list
 
     # Conservative rule-based decision
     if prediction == 1 or probability > 0.5:
-        decision = "Reject"
+        decision = "REJECT"
     elif probability > 0.35:
-        decision = "Reject"  # Conservative: borderline cases get rejected
+        decision = "REJECT"  # Conservative: borderline cases get rejected
     else:
-        decision = "Approve"
+        decision = "APPROVE"
 
     # Build risk drivers summary
     if explanation:
@@ -408,8 +553,8 @@ def _build_fallback_response(risk: dict, explanation: list, retrieved_docs: list
     # Collect sources
     sources = list({doc.get("source", "Unknown") for doc in (retrieved_docs or [])})
 
-    return {
-        "Profile Summary": (
+    fallback = {
+        "Borrower Profile Summary": (
             f"Borrower classified as {label} with a {probability:.1%} "
             f"probability of default based on ML model analysis."
         ),
@@ -419,15 +564,9 @@ def _build_fallback_response(risk: dict, explanation: list, retrieved_docs: list
             f"including income, loan characteristics, and credit history. "
             f"{'The elevated risk level warrants caution.' if probability > 0.3 else 'The risk level is within acceptable bounds.'}"
         ),
-        "Key Risk Drivers": drivers,
-        "Decision": decision,
-        "Justification": (
-            f"Based on the ML risk prediction ({label}, p={probability:.1%}), "
-            f"the recommendation is to {decision.lower()} this loan application. "
-            f"{'The default probability exceeds the acceptable threshold for approval.' if decision == 'Reject' else 'The default probability is within acceptable limits for standard lending criteria.'} "
-            f"Note: This is a fallback assessment generated without LLM reasoning due to a service error."
-        ),
-        "Sources": sources if sources else [],
+        "Lending Decision": decision,
+        "Confidence": 0.4 if decision == "CONDITIONAL" else 0.35,
+        "Regulatory References": sources if sources else [],
         "Disclaimer": (
             "This is an AI-generated recommendation and should not be used as the "
             "sole basis for lending decisions. Final approval must involve human review "
@@ -436,6 +575,62 @@ def _build_fallback_response(risk: dict, explanation: list, retrieved_docs: list
             "rule-based logic applied to the ML prediction.]"
         ),
     }
+    return _finalize_decision_output(fallback, risk, retrieved_docs)
+
+
+def _ml_recommended_decision(risk: dict) -> str:
+    """Derive a deterministic recommendation from ML prediction and probability."""
+    prediction = int(risk.get("prediction", 0))
+    probability = float(risk.get("probability", 0.0))
+
+    # Conservative triage policy aligned with end-sem requirements.
+    if prediction == 1 and probability >= BORDERLINE_RANGE[1]:
+        return "REJECT"
+    if prediction == 0 and probability <= BORDERLINE_RANGE[0]:
+        return "APPROVE"
+    return "CONDITIONAL"
+
+
+def _reconcile_decision_with_ml(decision: dict, risk: dict) -> dict:
+    """
+    Enforce consistency between LLM decision and ML primary signal.
+
+    This avoids contradictions and guarantees production-safe outputs where
+    the final decision aligns with model risk scoring policy.
+    """
+    aligned = dict(decision)
+    ml_decision = _ml_recommended_decision(risk)
+    current_decision = str(aligned.get("Lending Decision", "CONDITIONAL")).strip().upper()
+    if current_decision == "APPROVED":
+        current_decision = "APPROVE"
+    elif current_decision == "REJECTED":
+        current_decision = "REJECT"
+    elif current_decision not in SUPPORTED_LENDING_DECISIONS:
+        current_decision = "CONDITIONAL"
+
+    if current_decision != ml_decision:
+        probability = float(risk.get("probability", 0.0))
+        aligned["Lending Decision"] = ml_decision
+        aligned["Confidence"] = 0.3 if ml_decision != "CONDITIONAL" else 0.4
+        aligned["Risk Analysis"] = (
+            f"{aligned.get('Risk Analysis', 'Risk analysis available.')} "
+            f"Final verdict aligned to ML primary signal (probability={probability:.1%})."
+        )
+
+    return aligned
+
+
+def _finalize_decision_output(decision: dict, risk: dict, retrieved_docs: list) -> dict:
+    """Return a schema-complete, ML-aligned, JSON-safe decision payload."""
+    validated = _validate_decision_output(decision)
+    validated["Regulatory References"] = _validate_regulatory_references(
+        validated.get("Regulatory References") or [],
+        retrieved_docs,
+    )
+    aligned = _reconcile_decision_with_ml(validated, risk)
+
+    # Round-trip through JSON to guarantee serializable, valid JSON-compatible output.
+    return json.loads(json.dumps(aligned, ensure_ascii=False, default=str))
 
 
 def _validate_decision_output(parsed: dict) -> dict:
@@ -455,55 +650,67 @@ def _validate_decision_output(parsed: dict) -> dict:
     dict
         Validated and normalized decision report.
     """
-    required_fields = [
-        "Profile Summary", "Risk Analysis", "Key Risk Drivers",
-        "Decision", "Confidence", "Justification", "Sources", "Disclaimer",
-    ]
+    normalized = _normalize_decision_payload(parsed)
 
-    # Ensure all fields exist
-    for field in required_fields:
-        if field not in parsed:
-            logger.warning("Missing field '%s' in LLM output — using default", field)
-            if field == "Sources":
-                parsed[field] = []
-            elif field == "Decision":
-                parsed[field] = "Reject"  # Conservative default
-            elif field == "Confidence":
-                parsed[field] = "Low"  # Default to low if missing
-            elif field == "Disclaimer":
-                parsed[field] = (
-                    "This is an AI-generated recommendation and should not be used "
-                    "as the sole basis for lending decisions. Final approval must involve "
-                    "human review and comply with all applicable regulations."
-                )
-            else:
-                parsed[field] = "Information not available."
+    # Keep only required contract keys to enforce exact output format.
+    normalized = {field: normalized[field] for field in CANONICAL_OUTPUT_FIELDS}
 
-    # Normalize the Decision field
-    decision = str(parsed["Decision"]).strip().title()
-    if decision not in ("Approve", "Reject"):
+    # Normalize the Lending Decision field.
+    decision = str(normalized["Lending Decision"]).strip().upper()
+    if decision == "APPROVED":
+        decision = "APPROVE"
+    elif decision == "REJECTED":
+        decision = "REJECT"
+    elif decision not in SUPPORTED_LENDING_DECISIONS:
         logger.warning(
-            "Invalid Decision value '%s' — defaulting to 'Reject' (conservative)",
-            parsed["Decision"],
+            "Invalid Lending Decision value '%s' — defaulting to 'CONDITIONAL'",
+            normalized["Lending Decision"],
         )
-        decision = "Reject"
-    parsed["Decision"] = decision
+        decision = "CONDITIONAL"
+    normalized["Lending Decision"] = decision
 
-    # Normalize the Confidence field
-    confidence = str(parsed.get("Confidence", "Low")).strip().title()
-    if confidence not in ("High", "Medium", "Low"):
+    # Normalize Confidence to numeric range [0.0, 1.0]
+    raw_confidence = normalized.get("Confidence", 0.5)
+    if isinstance(raw_confidence, str):
+        score_from_label = CONFIDENCE_LEVELS.get(raw_confidence.strip().lower())
+        if score_from_label is not None:
+            confidence_score = score_from_label
+        else:
+            try:
+                confidence_score = float(raw_confidence)
+            except ValueError:
+                confidence_score = 0.5
+    else:
+        try:
+            confidence_score = float(raw_confidence)
+        except (TypeError, ValueError):
+            confidence_score = 0.5
+
+    if not (0.0 <= confidence_score <= 1.0):
         logger.warning(
-            "Invalid Confidence value '%s' — defaulting to 'Low'",
-            parsed.get("Confidence"),
+            "Invalid Confidence value '%s' — clamping to [0.0, 1.0]",
+            raw_confidence,
         )
-        confidence = "Low"
-    parsed["Confidence"] = confidence
+    normalized["Confidence"] = max(0.0, min(confidence_score, 1.0))
 
-    # Ensure Sources is a list
-    if not isinstance(parsed["Sources"], list):
-        parsed["Sources"] = [str(parsed["Sources"])]
+    # Ensure Regulatory References is a list
+    if not isinstance(normalized["Regulatory References"], list):
+        normalized["Regulatory References"] = [str(normalized["Regulatory References"])]
 
-    return parsed
+    references = []
+    for reference in normalized["Regulatory References"]:
+        reference_text = str(reference).strip()
+        if reference_text and reference_text not in references:
+            references.append(reference_text)
+    normalized["Regulatory References"] = references
+
+    # Ensure text fields are non-empty strings.
+    for field in ["Borrower Profile Summary", "Risk Analysis", "Disclaimer"]:
+        value = normalized.get(field, "")
+        if not isinstance(value, str) or not value.strip():
+            normalized[field] = "Information not available."
+
+    return normalized
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -552,12 +759,11 @@ def generate_decision(
     dict
         Structured lending decision report:
         {
-            "Profile Summary": str,
+            "Borrower Profile Summary": str,
             "Risk Analysis": str,
-            "Key Risk Drivers": str,
-            "Decision": "Approve" or "Reject",
-            "Justification": str,
-            "Sources": List[str],
+            "Lending Decision": "APPROVE" or "REJECT" or "CONDITIONAL",
+            "Confidence": float,
+            "Regulatory References": List[str],
             "Disclaimer": str
         }
     """
@@ -575,6 +781,13 @@ def generate_decision(
         "Calling LLM (model=%s, temp=%.2f) with %d risk factors and %d retrieved docs",
         model, temperature, len(explanation), len(retrieved_docs),
     )
+
+    # Always attempt LLM reasoning whenever an API key exists.
+    has_api_key = bool(os.environ.get("GROQ_API_KEY"))
+
+    if not has_api_key:
+        logger.warning("GROQ_API_KEY not found — using fallback response")
+        return _build_fallback_response(risk, explanation, retrieved_docs)
 
     # ── Call LLM ─────────────────────────────────────────────────────────
     try:
@@ -603,8 +816,12 @@ def generate_decision(
     # ── Parse response ───────────────────────────────────────────────────
     try:
         parsed = _extract_json_from_response(raw_response)
-        validated = _validate_decision_output(parsed)
-        logger.info("Decision: %s (Confidence: %s)", validated["Decision"], validated.get("Confidence", "N/A"))
+        validated = _finalize_decision_output(parsed, risk, retrieved_docs)
+        logger.info(
+            "Lending Decision: %s (Confidence: %.2f)",
+            validated["Lending Decision"],
+            float(validated.get("Confidence", 0.0)),
+        )
         return validated
 
     except (ValueError, json.JSONDecodeError) as e:
@@ -637,27 +854,32 @@ def compute_confidence_score(decision: dict, risk: dict) -> float:
     """
     score = 0.0
 
-    # ── Signal 1: LLM's self-reported confidence (40% weight) ────────────
-    llm_confidence = decision.get("Confidence", "Low").lower()
-    confidence_map = {"high": 1.0, "medium": 0.6, "low": 0.25}
-    score += 0.40 * confidence_map.get(llm_confidence, 0.25)
+    decision = _normalize_decision_payload(decision)
+
+    # ── Signal 1: Model-reported Confidence Score (40% weight) ───────────
+    try:
+        llm_confidence_score = float(decision.get("Confidence", 0.5))
+    except (TypeError, ValueError):
+        llm_confidence_score = 0.5
+    llm_confidence_score = max(0.0, min(llm_confidence_score, 1.0))
+    score += 0.40 * llm_confidence_score
 
     # ── Signal 2: ML-LLM alignment (35% weight) ─────────────────────────
     # If the LLM decision aligns with what the ML probability suggests,
     # confidence is higher.
     probability = risk.get("probability", 0.5)
-    llm_decision = decision.get("Decision", "Reject")
+    llm_decision = decision.get("Lending Decision", "REJECT")
 
-    if llm_decision == "Reject" and probability > 0.5:
+    if llm_decision == "REJECT" and probability >= BORDERLINE_RANGE[1]:
         alignment = 1.0  # Both say risky
-    elif llm_decision == "Approve" and probability < 0.5:
+    elif llm_decision == "APPROVE" and probability <= BORDERLINE_RANGE[0]:
         alignment = 1.0  # Both say safe
-    elif llm_decision == "Approve" and probability > 0.5:
-        alignment = 0.2  # LLM overrides ML — low alignment
-    elif llm_decision == "Reject" and probability < 0.3:
-        alignment = 0.3  # LLM is overly conservative
+    elif llm_decision == "CONDITIONAL" and BORDERLINE_RANGE[0] < probability < BORDERLINE_RANGE[1]:
+        alignment = 1.0
+    elif llm_decision == "CONDITIONAL":
+        alignment = 0.5
     else:
-        alignment = 0.5  # Borderline zone
+        alignment = 0.2  # Contradictory with ML policy
     score += 0.35 * alignment
 
     # ── Signal 3: Borderline detection (25% weight) ──────────────────────
@@ -674,8 +896,8 @@ def compute_confidence_score(decision: dict, risk: dict) -> float:
 
     final_score = round(min(max(score, 0.0), 1.0), 4)
     logger.info(
-        "Confidence score: %.4f (LLM=%s, alignment=%.2f, borderline=%.2f)",
-        final_score, llm_confidence, alignment, borderline_score,
+        "Confidence score: %.4f (reported=%.2f, alignment=%.2f, borderline=%.2f)",
+        final_score, llm_confidence_score, alignment, borderline_score,
     )
     return final_score
 
@@ -733,8 +955,10 @@ def reflect_on_decision(
         Revised decision with updated confidence and justification.
         Contains an additional "Reflection" field documenting the review.
     """
+    initial_decision = _normalize_decision_payload(initial_decision)
+
     logger.info("🔄 Reflecting on initial decision: %s (Confidence: %s)",
-                initial_decision.get("Decision"), initial_decision.get("Confidence"))
+                initial_decision.get("Lending Decision"), initial_decision.get("Confidence"))
 
     risk_section = _format_risk_section(risk)
     explanation_section = _format_explanation_section(explanation)
@@ -759,11 +983,10 @@ RELEVANT REGULATIONS:
 COLLEAGUE'S INITIAL DECISION
 ═══════════════════════════════════════════
 
-Decision: {initial_decision.get('Decision', 'Unknown')}
+Lending Decision: {initial_decision.get('Lending Decision', 'UNKNOWN')}
 Confidence: {initial_decision.get('Confidence', 'Unknown')}
-Profile Summary: {initial_decision.get('Profile Summary', 'N/A')}
+Borrower Profile Summary: {initial_decision.get('Borrower Profile Summary', 'N/A')}
 Risk Analysis: {initial_decision.get('Risk Analysis', 'N/A')}
-Justification: {initial_decision.get('Justification', 'N/A')}
 
 ═══════════════════════════════════════════
 YOUR REVIEW TASK
@@ -776,14 +999,11 @@ YOUR REVIEW TASK
 
 Respond with ONLY a valid JSON object:
 {{
-    "Profile Summary": "Updated summary incorporating your review insights",
+    "Borrower Profile Summary": "Updated summary incorporating your review insights",
     "Risk Analysis": "Deeper analysis after second-pass review",
-    "Key Risk Drivers": "Refined risk drivers after critical examination",
-    "Decision": "Approve" or "Reject" (your final verdict),
-    "Confidence": "High", "Medium", or "Low" (your confidence after review),
-    "Justification": "Full justification incorporating review findings",
-    "Reflection": "What you found in your review — did you agree or disagree with the original? Why?",
-    "Sources": ["source documents referenced"],
+    "Lending Decision": "APPROVE" or "REJECT" or "CONDITIONAL" (your final verdict),
+    "Confidence": 0.0,
+    "Regulatory References": ["source documents referenced"],
     "Disclaimer": "This is an AI-generated recommendation reviewed through a multi-step reasoning process. Final approval must involve human review and comply with all applicable regulations."
 }}"""
 
@@ -806,27 +1026,16 @@ Respond with ONLY a valid JSON object:
         logger.info("Reflection response received (%d chars)", len(raw_response))
 
         parsed = _extract_json_from_response(raw_response)
-        validated = _validate_decision_output(parsed)
-
-        # Preserve the reflection field if present
-        if "Reflection" in parsed:
-            validated["Reflection"] = parsed["Reflection"]
-        else:
-            validated["Reflection"] = "Review completed — no specific critique noted."
-
-        # Mark as reviewed
-        validated["review_pass"] = "reflected"
+        validated = _finalize_decision_output(parsed, risk, retrieved_docs)
 
         logger.info(
-            "🔄 Reflection result: %s (Confidence: %s) | %s",
-            validated["Decision"], validated.get("Confidence"),
-            "UPHELD" if validated["Decision"] == initial_decision.get("Decision") else "OVERRIDDEN",
+            "🔄 Reflection result: %s (Confidence: %.2f) | %s",
+            validated["Lending Decision"], float(validated.get("Confidence", 0.0)),
+            "UPHELD" if validated["Lending Decision"] == initial_decision.get("Lending Decision") else "OVERRIDDEN",
         )
 
         return validated
 
     except Exception as e:
         logger.error("Reflection failed: %s — keeping initial decision", e)
-        initial_decision["Reflection"] = f"Reflection attempt failed: {e}. Initial decision preserved."
-        initial_decision["review_pass"] = "reflection_failed"
-        return initial_decision
+        return _finalize_decision_output(initial_decision, risk, retrieved_docs)
