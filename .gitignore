@@ -3,8 +3,4 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints
 .DS_Store
-models/*.joblib
 .env
-
-# Milestone 2 — RAG artifacts
-rag/faiss_index/
