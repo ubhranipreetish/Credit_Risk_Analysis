@@ -3,7 +3,7 @@
 
 ## From Financial Risk Modeling to Automated Lending Advice  
 
-**Live Demo:** https://credit-risk-analyzer-123.streamlit.app/  
+**Live Demo:** https://credit-risk-analyzer-456.streamlit.app/  
 
 ---
 
@@ -13,11 +13,6 @@ This project focuses on the design and implementation of an **AI-driven credit a
 
 - **Milestone 1:** Apply classical machine learning techniques to historical borrower financial data to predict default probability and credit risk.
 - **Milestone 2:** Extend the system into an agent-based AI application that autonomously reasons about borrower risk, retrieves relevant financial regulations using Retrieval-Augmented Generation (RAG), and generates structured lending recommendations.
-
-The deployed app provides **tab navigation** for both milestones:
-
-- **Milestone 1 Tab:** Classical ML scoring (Logistic Regression / Decision Tree) with evaluation snapshot.
-- **Milestone 2 Tab:** Agentic lending decision support (LangGraph + RAG + structured report).
 
 ---
 
@@ -35,9 +30,9 @@ The deployed app provides **tab navigation** for both milestones:
 | Component | Technology |
 |------------|------------|
 | **ML Models (M1)** | Logistic Regression, Decision Trees, Scikit-Learn |
-| **Agent Framework (M2)** | LangGraph, Chroma / FAISS (RAG) |
+| **Agent Framework (M2)** | LangGraph, FAISS (RAG) |
 | **UI Framework** | Streamlit |
-| **LLMs (M2)** | Open-source models or Free-tier APIs |
+| **LLMs (M2)** | Groq API (Llama-3.3-70b-versatile) |
 
 ---
 
@@ -106,11 +101,5 @@ The app will be available at `http://localhost:8501`.
 ## Alternative Manual Run
 
 ```bash
-.venv/bin/python -m streamlit run streamlit_app.py --server.headless true --server.port 8501
+venv/bin/python3 -m streamlit run streamlit_app.py --server.port 8501
 ```
-
-## System Explanation Document
-
-For a complete viva/report-ready explanation of architecture, workflow, rubric mapping, and design choices, see:
-
-- `SYSTEM_EXPLANATION.md`
