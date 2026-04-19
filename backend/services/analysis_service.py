@@ -67,10 +67,12 @@ class AnalysisService:
             step in steps
             for step in ("rag:NO_INDEX", "rag_deep:NO_INDEX", "rag:FAILED", "rag_deep:FAILED", "rag:EMPTY", "rag_deep:EMPTY")
         ):
+            from agent.rag.retriever import _safe_mode_reason
+            reason = _safe_mode_reason or "Unknown cause"
             warnings.append(
                 AnalysisWarning(
                     code="missing_rag_index",
-                    message="RAG context is unavailable; decision generated with empty retrieval context.",
+                    message=f"RAG context is unavailable ({reason}); decision generated with empty retrieval context.",
                 )
             )
 
